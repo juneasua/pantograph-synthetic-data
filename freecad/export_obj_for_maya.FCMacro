@@ -1,0 +1,55 @@
+# Export CAD solids (except fasteners) to one OBJ for Maya.
+# One OBJ object per CAD part, named after its FreeCAD groups.
+# Units: mm -> cm. Axes: FreeCAD Z-up -> Maya Y-up.
+import os
+import re
+import FreeCAD as App
+
+TOLERANCE_MM = 1.0  # max deviation from the true CAD surface (smaller = denser mesh)
+SCALE = 0.1         # mm -> cm
+
+doc = App.ActiveDocument
+out_dir = os.path.dirname(doc.FileName) if doc.FileName else os.path.expanduser("~")
+out_path = os.path.join(out_dir, "pantograph_export.obj")
+
+
+def parent_part(obj):
+    """Return the App::Part that directly contains obj, or None."""
+    for parent in obj.InList:
+        if parent.isDerivedFrom("App::Part") and obj in parent.Group:
+            return parent
+    return None
+
+
+def export_name(obj):
+    """Build a Maya-safe name from the group chain, e.g. cad_58__064."""
+    labels = [obj.Label]
+    parent = parent_part(obj)
+    while parent is not None and parent_part(parent) is not None:  # stop before the root part
+        labels.insert(0, parent.Label)
+        parent = parent_part(parent)
+    name = "__".join(labels)
+    return "cad_" + re.sub(r"[^A-Za-z0-9_]", "_", name)
+
+
+parts = [
+    o for o in doc.Objects
+    if o.isDerivedFrom("Part::Feature")
+    and not o.Shape.isNull()
+    and not any(k in o.Label for k in SKIP)
+]
+
+offset = 1
+with open(out_path, "w") as f:
+    for obj in parts:
+        shape = obj.Shape.copy()
+        shape.Placement = obj.getGlobalPlacement()
+        verts, faces = shape.tessellate(TOLERANCE_MM)
+        f.write("g %s\n" % export_name(obj))
+        for v in verts:
+            f.write("v %.4f %.4f %.4f\n" % (v.x * SCALE, v.z * SCALE, -v.y * SCALE))
+        for a, b, c in faces:
+            f.write("f %d %d %d\n" % (a + offset, b + offset, c + offset))
+        offset += len(verts)
+
+print("Exported %d parts to %s" % (len(parts), out_path))
